@@ -40,6 +40,9 @@ dialog::backdrop{background:#0008}
 .btns{display:flex;gap:8px;margin-top:16px}.btns button{flex:1}
 .tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;background:var(--line);margin-left:6px}
 .tag.bad{background:var(--bad);color:#fff}
+.chips{display:flex;gap:8px;margin:10px 0 4px;overflow-x:auto}
+.chips button{flex:none;border-radius:99px;padding:7px 14px;font-size:14px;background:var(--card);border:1px solid var(--line);color:var(--mut)}
+.chips button.on{background:var(--pri);color:var(--bg);border-color:var(--pri);font-weight:600}
 </style>
 </head>
 <body>
@@ -57,7 +60,7 @@ dialog::backdrop{background:#0008}
 
 <script>
 /* ---------- Storage (IndexedDB) ---------- */
-const DB='duesdb';let db,clients=[],view='main',q='';
+const DB='duesdb';let db,clients=[],view='main',q='',flt='all';
 const open=()=>new Promise((res,rej)=>{const r=indexedDB.open(DB,1);
  r.onupgradeneeded=()=>r.result.createObjectStore('c',{keyPath:'id',autoIncrement:true});
  r.onsuccess=()=>{db=r.result;res()};r.onerror=()=>rej(r.error)});
@@ -96,11 +99,15 @@ function render(){
    n===0?'today':n<0?'over':n<=3?'soon':'')).join('');
  }
  if(view==='search'){
-  const L=clients.filter(c=>!q||c.phone.includes(q)).sort((a,b)=>a.phone.localeCompare(b.phone));
-  m.innerHTML=`<input id="q" type="search" inputmode="tel" placeholder="Search phone number" value="${esc(q)}">`+
+  const L=clients.filter(c=>(!q||c.phone.includes(q))&&(flt==='all'||c.status===flt)).sort((a,b)=>a.phone.localeCompare(b.phone));
+  const cnt=s=>s==='all'?clients.length:clients.filter(c=>c.status===s).length;
+  const chips=[['all','All'],['active','Active'],['followup','Follow-up'],['removed','Removed']]
+   .map(([k,l])=>`<button data-f="${k}" class="${flt===k?'on':''}">${l} (${cnt(k)})</button>`).join('');
+  m.innerHTML=`<input id="q" type="search" inputmode="tel" placeholder="Search phone number" value="${esc(q)}"><div class="chips" id="chips">${chips}</div>`+
    (L.length?L.map(c=>card(c,{head:`<div class="due">${c.status==='active'?dueText(diff(dueOf(c),t)):''}<span class="tag">${c.status}</span></div>`,
     meta:`${c.months} mo paid on ${nice(c.payDate)}${c.followDate?` · follow-up from ${nice(c.followDate)}`:''}`,
     act:`<div class="act"><button data-a="edit" data-id="${c.id}">Edit</button></div>`})).join(''):'<div class="empty">No matches.</div>');
+  $('#chips').onclick=e=>{const b=e.target.closest('button[data-f]');if(b){flt=b.dataset.f;render()}};
   const i=$('#q');i.oninput=()=>{q=i.value.trim();const p=i.selectionStart;render();const j=$('#q');j.focus();j.setSelectionRange(p,p)};
  }
  if(view==='follow'){
@@ -108,7 +115,7 @@ function render(){
   if(!L.length){m.innerHTML='<div class="empty">Nobody is being followed up.</div>';return}
   m.innerHTML=L.map(({c,d})=>card(c,{head:`<div class="due">Day ${d}${d>=5?'<span class="tag bad">Remove?</span>':''}</div>`,
    meta:`Following up since ${nice(c.followDate)} · ${d} day${d!==1?'s':''} ago · was due ${nice(dueOf(c))}`,
-   act:`<div class="act"><button class="ok" data-a="paid" data-id="${c.id}">Paid</button><button class="${d>=5?'bad':''}" data-a="rm" data-id="${c.id}">Remove</button></div>`},d>=5?'over':'today')).join('');
+   act:`<div class="act"><button class="ok" data-a="paid" data-id="${c.id}">Paid</button><button data-a="back" data-id="${c.id}">Back to due</button><button class="${d>=5?'bad':''}" data-a="rm" data-id="${c.id}">Remove</button></div>`},d>=5?'over':'today')).join('');
  }
 }
 
@@ -157,12 +164,83 @@ $('#main').addEventListener('click',async e=>{
  if(a==='fu')await save({...c,status:'followup',followDate:today()});
  if(a==='edit')edit(c);
  if(a==='paid')paid(c);
+ if(a==='back')await save({...c,status:'active',followDate:''});
  if(a==='rm'&&confirm(`Remove ${c.phone} for non-payment?`))await save({...c,status:'removed'});
 });
 $('#nav').onclick=e=>{const b=e.target.closest('button');if(b){view=b.dataset.v;render()}};
 $('#addBtn').onclick=add;
 
 /* ---------- Data: CSV import / export ---------- */
+const HEAD=['phone','months_paid','payment_date','followup_date','status'];
+const cell=v=>/[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;
+function exportCsv(){
+ const rows=[HEAD.join(',')].concat(clients.map(c=>[c.phone,c.months,c.payDate,c.followDate||'',c.status].map(x=>cell(String(x))).join(',')));
+ const a=document.createElement('a');
+ a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
+ a.download=`clients-${today()}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+function parseCsv(t){
+ const out=[];let r=[],f='',qt=false;
+ for(let i=0;i<t.length;i++){const ch=t[i];
+  if(qt){if(ch==='"'){if(t[i+1]==='"'){f+='"';i++}else qt=false}else f+=ch}
+  else if(ch==='"')qt=true;
+  else if(ch===','){r.push(f);f=''}
+  else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&t[i+1]==='\n')i++;r.push(f);f='';if(r.some(x=>x.trim()))out.push(r);r=[]}
+  else f+=ch}
+ r.push(f);if(r.some(x=>x.trim()))out.push(r);return out;
+}
+function normDate(s){
+ s=(s||'').trim();if(!s)return'';
+ let m=s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);if(m)return`${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+ m=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/);
+ if(m){let y=m[3].length===2?'20'+m[3]:m[3];return`${y}-${pad(m[2])}-${pad(m[1])}`}
+ return'';
+}
+async function importCsv(file){
+ const rows=parseCsv(await file.text());if(!rows.length)return alert('File is empty.');
+ let idx=[0,1,2,3,4];
+ if(isNaN(parseInt(rows[0][1],10))&&!/\d/.test(rows[0][0])){ // header row
+  const h=rows.shift().map(x=>x.trim().toLowerCase());
+  const f=(...k)=>h.findIndex(x=>k.some(y=>x.includes(y)));
+  idx=[f('phone','number'),f('month'),f('payment','date'),f('follow'),f('status')];
+ }
+ let n=0,bad=0;
+ for(const r of rows){
+  const phone=(r[idx[0]]||'').trim(),months=parseInt(r[idx[1]],10),payDate=normDate(r[idx[2]]);
+  if(!phone||!(months>0)||!payDate){bad++;continue}
+  const followDate=idx[3]>=0?normDate(r[idx[3]]):'';
+  let status=idx[4]>=0?(r[idx[4]]||'').trim().toLowerCase():'';
+  if(!['active','followup','removed'].includes(status))status=followDate?'followup':'active';
+  if(status==='followup'&&!followDate)status='active';
+  const ex=clients.find(c=>c.phone===phone);
+  await wrap(tx('readwrite').put({...(ex||{}),phone,months,payDate,followDate,status}));
+  await load();n++;
+ }
+ render();alert(`Imported ${n} row(s)${bad?`, skipped ${bad} invalid`:''}.`);
+}
+$('#dataBtn').onclick=()=>{
+ dlg.innerHTML=`<h2 style="font-size:19px">Data</h2>
+ <p class="meta" style="margin:8px 0">${clients.length} records stored on this device. Import accepts legacy CSV (number, months paid, payment date) or this app's export. Existing numbers are updated.</p>
+ <div class="btns" style="flex-direction:column"><button class="p" id="ex">Export CSV</button>
+ <button id="im">Import CSV</button><button id="cl">Close</button></div>
+ <input type="file" id="fi" accept=".csv,text/csv,text/plain" hidden>`;
+ dlg.showModal();
+ $('#ex').onclick=exportCsv;$('#cl').onclick=()=>dlg.close();
+ $('#im').onclick=()=>$('#fi').click();
+ $('#fi').onchange=async e=>{const f=e.target.files[0];if(f){dlg.close();await importCsv(f)}};
+};
+
+/* ---------- PWA ---------- */
+const icon="data:image/svg+xml,"+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="110" fill="#0f3d3e"/><text x="256" y="350" font-size="300" text-anchor="middle" fill="#fff" font-family="sans-serif" font-weight="700">$</text></svg>');
+const mf={name:'Dues',short_name:'Dues',start_url:location.href.split('#')[0],display:'standalone',background_color:'#0f3d3e',theme_color:'#0f3d3e',icons:[{src:icon,sizes:'512x512',type:'image/svg+xml',purpose:'any'}]};
+const ml=document.createElement('link');ml.rel='manifest';
+ml.href=URL.createObjectURL(new Blob([JSON.stringify(mf)],{type:'application/manifest+json'}));document.head.append(ml);
+const al=document.createElement('link');al.rel='apple-touch-icon';al.href=icon;document.head.append(al);
+
+open().then(load).then(render);
+</script>
+</body>
+</html>/ export ---------- */
 const HEAD=['phone','months_paid','payment_date','followup_date','status'];
 const cell=v=>/[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;
 function exportCsv(){
